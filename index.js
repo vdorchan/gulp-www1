@@ -2,7 +2,7 @@
 
 const through = require('through2')
 const path = require('path')
-const www1 = require('pc-www1')
+const Www1 = require('pc-www1')
 const fs = require('fs')
 const prompt = require('prompt')
 const chalk = require('chalk')
@@ -20,9 +20,47 @@ module.exports = function (opts) {
 
   let isFirst = true
 
-  www1.init({
-    site: site
-  })
+  let user
+  if (!opts.username || !opts.password) {
+    try {
+      user = JSON.parse(fs.readFileSync(path.resolve(homedir, '.pcuserconf')))
+    } catch (error) {
+      const confName = 'PCUSERCONF'
+      user = {}
+      let dir = process.cwd()
+      while (dir) {
+        const files = fs.readdirSync(dir)
+
+        files.forEach(file => {
+          if (file === confName) {
+            let confArr = fs.readFileSync(dir + path.sep + confName).toString().split('\n')
+
+            confArr.forEach(i => {
+              i.indexOf('username') !== -1 && (user.username = i.replace(/username:(.+)/, '$1').trim())
+              i.indexOf('password') !== -1 && (user.password = i.replace(/password:(.+)/, '$1').trim())
+              i.indexOf('city') !== -1 && (user.city = i.replace(/city:(.+)/, '$1').trim())
+            })
+          }
+        })
+
+        const _dir = path.resolve(dir, '..')
+        dir = _dir === dir ? null : _dir
+      }
+    }
+
+    if (!user.username || !user.password) {
+      return console.error(PLUGIN_NAME, ':未找到用户配置文件 .pcuserconf，无法获取到用户名和密码！')
+    }
+    opts.username = user.username
+    opts.password = user.password
+  } else {
+    user = {
+      username: opts.username,
+      password: opts.password
+    }
+  }
+
+  const www1 = new Www1(Object.assign({ debug: true }, { site }, user))
 
   function upload (opts, file, next, emit) {
     if (file.isStream()) {
@@ -33,60 +71,22 @@ module.exports = function (opts) {
     if (file.isNull() || file.stat.isDirectory() || file.stat.size <= 0) {
       return console.error(PLUGIN_NAME, `:${fileName}文件夹上传失败，不支持上传文件夹，上传中止!`)
     }
+    if (isFirst) {
+      www1.login().then(_upload)
+    } else {
+      _upload()
+    }
 
-    www1.upload(file.path, {
-      targetPath,
-      user: {
-        username: opts.username,
-        password: opts.password
-      }
-    }).then(() => {
-      next()
-    }).catch(err => {
-      console.error(PLUGIN_NAME, `:${err}`)
-    })
+    function _upload () {
+      www1.upload(file.path, targetPath).then(() => next()).catch(err => {
+        console.error(PLUGIN_NAME, `:${err}`)
+      })
+    }
   }
 
   return through.obj(function (file, enc, next) {
     fileName = path.basename(file.path)
     if (isFirst) {
-      isFirst = false
-
-      if (!opts.username || !opts.password) {
-        let user
-        try {
-          user = JSON.parse(fs.readFileSync(path.resolve(homedir, '.pcuserconf')))
-        } catch (error) {
-          const confName = 'PCUSERCONF'
-          user = {}
-          let dir = process.cwd()
-          while (dir) {
-            const files = fs.readdirSync(dir)
-  
-            files.forEach(file => {
-              if (file === confName) {
-                let confArr = fs.readFileSync(dir + path.sep + confName).toString().split('\n')
-  
-                confArr.forEach(i => {
-                  i.indexOf('username') !== -1 && (user.username = i.replace(/username:(.+)/, '$1').trim())
-                  i.indexOf('password') !== -1 && (user.password = i.replace(/password:(.+)/, '$1').trim())
-                  i.indexOf('city') !== -1 && (user.city = i.replace(/city:(.+)/, '$1').trim())
-                })
-              }
-            })
-  
-            const _dir = path.resolve(dir, '..')
-            dir = _dir === dir ? null : _dir
-          }
-        }
-
-        if (!user.username || !user.password) {
-          return console.error(PLUGIN_NAME, ':未找到用户配置文件 .pcuserconf，无法获取到用户名和密码！')
-        }
-        opts.username = user.username
-        opts.password = user.password
-      }
-
       prompt.start()
       prompt.get({
         name: 'isUpload',
@@ -102,6 +102,7 @@ module.exports = function (opts) {
         }
         if (res.isUpload) {
           upload(opts, file, next, this.emit)
+          isFirst = false
         }
       })
     } else {
